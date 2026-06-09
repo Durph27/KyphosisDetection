@@ -83,7 +83,9 @@ STATUS_COLORS = {
     "calibrating": "#facc15",
     "good": "#22c55e",
     "mild": "#facc15",
+    "mild_backward": "#fb923c",
     "hunch": "#ef4444",
+    "backward": "#f97316",
     "no_pose": "#fb7185",
     "error": "#ef4444",
 }
@@ -161,25 +163,76 @@ def get_nose_point(frame, landmarks):
     return (int(nose.x * width), int(nose.y * height))
 
 
+def get_shoulder_width(landmarks):
+    """
+    Horizontal distance between shoulders (landmarks 11 and 12).
+    Decreases when the user leans backward away from the camera.
+    """
+    left_shoulder = landmarks[11]
+    right_shoulder = landmarks[12]
+    return abs(left_shoulder.x - right_shoulder.x)
+
+
+def get_face_width(landmarks):
+    """
+    Horizontal distance between ears:
+      landmark 7 = right ear
+      landmark 8 = left ear
+    Decreases when the user leans backward away from the camera.
+    """
+    right_ear = landmarks[7]
+    left_ear = landmarks[8]
+    return abs(right_ear.x - left_ear.x)
+
+
 def classify_posture(
     current_shoulder_y,
     baseline_shoulder_y,
     current_nose_to_shoulder,
     baseline_nose_to_shoulder,
+    current_shoulder_width=None,
+    baseline_shoulder_width=None,
+    current_face_width=None,
+    baseline_face_width=None,
 ):
     shoulder_drop = current_shoulder_y - baseline_shoulder_y
 
     if baseline_nose_to_shoulder == 0:
-        nose_ratio = 1
+        nose_ratio = 1.0
     else:
         nose_ratio = current_nose_to_shoulder / baseline_nose_to_shoulder
 
-    shoulder_dropped_strong = shoulder_drop > 0.06
-    shoulder_dropped_mild = shoulder_drop > 0.035
-    nose_close_strong = nose_ratio < 0.75
-    nose_close_mild = nose_ratio < 0.85
+    # --- Width ratios (lean-backward detection) ---
+    # shoulder_width_ratio = current_shoulder_width / baseline_shoulder_width
+    # face_width_ratio      = current_face_width      / baseline_face_width
+    # Both shrink when the user leans backward (moves away from camera).
+    if baseline_shoulder_width and baseline_shoulder_width > 0:
+        shoulder_width_ratio = current_shoulder_width / baseline_shoulder_width
+    else:
+        shoulder_width_ratio = 1.0
 
-    if shoulder_dropped_strong and nose_close_strong:
+    if baseline_face_width and baseline_face_width > 0:
+        face_width_ratio = current_face_width / baseline_face_width
+    else:
+        face_width_ratio = 1.0
+
+    # Lean-backward thresholds
+    lean_backward_strong = shoulder_width_ratio < 0.82 and face_width_ratio < 0.82
+    lean_backward_mild   = shoulder_width_ratio < 0.90 or  face_width_ratio < 0.90
+
+    # Forward-hunch thresholds
+    shoulder_dropped_strong = shoulder_drop > 0.06
+    shoulder_dropped_mild   = shoulder_drop > 0.035
+    nose_close_strong = nose_ratio < 0.75
+    nose_close_mild   = nose_ratio < 0.85
+
+    if lean_backward_strong:
+        status = "Leaning backward"
+        color = (0, 128, 255)
+    elif lean_backward_mild:
+        status = "Slightly leaning backward"
+        color = (0, 200, 255)
+    elif shoulder_dropped_strong and nose_close_strong:
         status = "Likely hunch/slouching"
         color = (0, 0, 255)
     elif shoulder_dropped_strong:
@@ -195,7 +248,7 @@ def classify_posture(
         status = "Good posture"
         color = (0, 255, 0)
 
-    return status, shoulder_drop, nose_ratio, color
+    return status, shoulder_drop, nose_ratio, shoulder_width_ratio, face_width_ratio, color
 
 
 def draw_baseline(frame, baseline_shoulder_y):
@@ -269,9 +322,13 @@ class PostureWorker(QThread):
         timestamp_ms = 0
         baseline_shoulder_y = None
         baseline_nose_to_shoulder = None
+        baseline_shoulder_width = None
+        baseline_face_width = None
         calibration_start_time = None
         calibration_shoulder_values = []
         calibration_nose_shoulder_values = []
+        calibration_shoulder_width_values = []
+        calibration_face_width_values = []
 
         with create_landmarker() as landmarker:
             while not self.isInterruptionRequested():
@@ -279,9 +336,13 @@ class PostureWorker(QThread):
                     self._recalibration_requested.clear()
                     baseline_shoulder_y = None
                     baseline_nose_to_shoulder = None
+                    baseline_shoulder_width = None
+                    baseline_face_width = None
                     calibration_start_time = None
                     calibration_shoulder_values = []
                     calibration_nose_shoulder_values = []
+                    calibration_shoulder_width_values = []
+                    calibration_face_width_values = []
                     self.metrics_ready.emit(
                         self._build_metrics(
                             "Recalibration requested. Sit straight.",
@@ -310,6 +371,8 @@ class PostureWorker(QThread):
 
                     current_shoulder_y = get_shoulder_y(landmarks)
                     current_nose_to_shoulder = get_nose_to_shoulder_distance(landmarks)
+                    current_shoulder_width = get_shoulder_width(landmarks)
+                    current_face_width = get_face_width(landmarks)
                     left_shoulder_point, right_shoulder_point = get_shoulder_points(
                         frame, landmarks
                     )
@@ -336,6 +399,8 @@ class PostureWorker(QThread):
                         calibration_nose_shoulder_values.append(
                             current_nose_to_shoulder
                         )
+                        calibration_shoulder_width_values.append(current_shoulder_width)
+                        calibration_face_width_values.append(current_face_width)
                         remaining_time = max(
                             0, self.calibration_seconds - int(elapsed_time)
                         )
@@ -373,13 +438,23 @@ class PostureWorker(QThread):
                             baseline_nose_to_shoulder = sum(
                                 calibration_nose_shoulder_values
                             ) / len(calibration_nose_shoulder_values)
+                            baseline_shoulder_width = sum(
+                                calibration_shoulder_width_values
+                            ) / len(calibration_shoulder_width_values)
+                            baseline_face_width = sum(
+                                calibration_face_width_values
+                            ) / len(calibration_face_width_values)
                     else:
                         draw_baseline(frame, baseline_shoulder_y)
-                        status, shoulder_drop, nose_ratio, color = classify_posture(
+                        status, shoulder_drop, nose_ratio, shoulder_width_ratio, face_width_ratio, color = classify_posture(
                             current_shoulder_y,
                             baseline_shoulder_y,
                             current_nose_to_shoulder,
                             baseline_nose_to_shoulder,
+                            current_shoulder_width,
+                            baseline_shoulder_width,
+                            current_face_width,
+                            baseline_face_width,
                         )
                         status_kind = self._status_kind(status)
 
@@ -410,6 +485,8 @@ class PostureWorker(QThread):
                         calibration_start_time = None
                         calibration_shoulder_values = []
                         calibration_nose_shoulder_values = []
+                        calibration_shoulder_width_values = []
+                        calibration_face_width_values = []
 
                     cv2.putText(
                         frame,
@@ -436,6 +513,10 @@ class PostureWorker(QThread):
             return "good"
         if status == "Mild slouching":
             return "mild"
+        if status == "Slightly leaning backward":
+            return "mild_backward"
+        if status == "Leaning backward":
+            return "backward"
         return "hunch"
 
     @staticmethod
@@ -444,6 +525,8 @@ class PostureWorker(QThread):
         status_kind,
         shoulder_drop=None,
         nose_ratio=None,
+        shoulder_width_ratio=None,
+        face_width_ratio=None,
         baseline_shoulder_y=None,
         current_shoulder_y=None,
     ):
@@ -452,6 +535,8 @@ class PostureWorker(QThread):
             "status_kind": status_kind,
             "shoulder_drop": shoulder_drop,
             "nose_ratio": nose_ratio,
+            "shoulder_width_ratio": shoulder_width_ratio,
+            "face_width_ratio": face_width_ratio,
             "baseline_shoulder_y": baseline_shoulder_y,
             "current_shoulder_y": current_shoulder_y,
         }
@@ -547,21 +632,29 @@ class SettingsDialog(QDialog):
 class PostureAlertDialog(QDialog):
     dismiss_requested = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, alert_type="hunch", parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Posture Alert")
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
         self.setMinimumWidth(420)
 
         layout = QVBoxLayout(self)
-        title = QLabel("Sustained hunched posture detected")
-        title.setStyleSheet("font-size: 18px; font-weight: 700; color: #dc2626;")
-        layout.addWidget(title)
 
-        message = QLabel(
-            "Please adjust your sitting position."
-        )
+        if alert_type == "backward":
+            self.setWindowTitle("Posture Alert — Leaning Backward")
+            title = QLabel("Leaning backward detected")
+            title.setStyleSheet("font-size: 18px; font-weight: 700; color: #f97316;")
+            message = QLabel(
+                "You appear to be leaning backward.\n"
+                "Sit upright with your back against the chair and feet flat on the floor."
+            )
+        else:
+            self.setWindowTitle("Posture Alert")
+            title = QLabel("Sustained hunched posture detected")
+            title.setStyleSheet("font-size: 18px; font-weight: 700; color: #dc2626;")
+            message = QLabel("Please adjust your sitting position.")
+
         message.setWordWrap(True)
+        layout.addWidget(title)
         layout.addWidget(message)
 
         dismiss_button = QPushButton("Dismiss")
@@ -605,6 +698,7 @@ class PostureDashboard(QMainWindow):
         self.hunch_started_at = None
         self.alert_active = False
         self.alert_acknowledged = False
+        self._current_alert_type = "hunch"
         self.alert_dialog = None
         self.blur_overlay = None
         self.shutting_down = False
@@ -854,12 +948,14 @@ class PostureDashboard(QMainWindow):
         self._track_hunch_status(status_kind)
 
     def _track_hunch_status(self, status_kind: str) -> None:
-        if status_kind != "hunch":
+        if status_kind not in ("hunch", "backward"):
             self._reset_hunch_detection()
             if status_kind == "good":
                 self.alert_progress_label.setText("Posture looks good")
             elif status_kind == "mild":
                 self.alert_progress_label.setText("Mild slouching: sit upright")
+            elif status_kind == "mild_backward":
+                self.alert_progress_label.setText("Slightly leaning backward: adjust your position")
             elif status_kind == "no_pose":
                 self.alert_progress_label.setText("Move into view to resume monitoring")
             return
@@ -868,13 +964,14 @@ class PostureDashboard(QMainWindow):
         if self.hunch_started_at is None:
             self.hunch_started_at = now
             self.alert_acknowledged = False
+            self._current_alert_type = status_kind  # track what triggered the alert
 
         delay_seconds = self.settings.value("alert_delay_seconds", 5, type=int)
         elapsed_seconds = now - self.hunch_started_at
         remaining_seconds = max(0, int(delay_seconds - elapsed_seconds + 0.999))
 
         if elapsed_seconds >= delay_seconds and not self.alert_acknowledged:
-            self.trigger_alert()
+            self.trigger_alert(self._current_alert_type)
         elif self.alert_active:
             self.alert_progress_label.setText("Posture reminder is active")
         elif self.alert_acknowledged:
@@ -882,11 +979,12 @@ class PostureDashboard(QMainWindow):
                 "Reminder dismissed. Sit upright to reset monitoring."
             )
         else:
+            label = "leaning backward" if status_kind == "backward" else "hunched posture"
             self.alert_progress_label.setText(
-                f"Hunched posture detected. Reminder in {remaining_seconds}s"
+                f"{label.capitalize()} detected. Reminder in {remaining_seconds}s"
             )
 
-    def trigger_alert(self) -> None:
+    def trigger_alert(self, alert_type="hunch") -> None:
         self.alert_active = True
         self.alert_acknowledged = True
         self.alert_progress_label.setText("Posture reminder is active")
@@ -895,12 +993,16 @@ class PostureDashboard(QMainWindow):
             self._show_blur_overlay()
         if self.settings.value("actions/sound", False, type=bool):
             self._start_alert_sound()
-        self._show_alert_dialog()
+        self._show_alert_dialog(alert_type)
 
         if self.tray_icon is not None:
+            if alert_type == "backward":
+                tray_msg = "Leaning backward detected. Please sit upright with back support."
+            else:
+                tray_msg = "Sustained hunched posture detected. Please sit upright."
             self.tray_icon.showMessage(
                 "Posture reminder",
-                "Sustained hunched posture detected. Please sit upright.",
+                tray_msg,
                 QSystemTrayIcon.MessageIcon.Warning,
                 5000,
             )
@@ -926,11 +1028,11 @@ class PostureDashboard(QMainWindow):
                 "Reminder dismissed. Sit upright to reset monitoring."
             )
 
-    def _show_alert_dialog(self) -> None:
+    def _show_alert_dialog(self, alert_type="hunch") -> None:
         if self.alert_dialog is not None:
             return
 
-        self.alert_dialog = PostureAlertDialog(self)
+        self.alert_dialog = PostureAlertDialog(alert_type, self)
         self.alert_dialog.dismiss_requested.connect(self.dismiss_alert)
         self.alert_dialog.finished.connect(self._clear_alert_dialog)
         self.alert_dialog.show()
