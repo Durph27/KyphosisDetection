@@ -67,8 +67,8 @@ def draw_pose(image, landmarks) -> None:
 
 def get_shoulder_y(landmarks):
     """
-    Tính vị trí y trung bình của đường nối 2 vai.
-    Landmark:
+    Returns the average Y position of the shoulder line.
+    Landmarks:
     11 = left shoulder
     12 = right shoulder
     """
@@ -79,9 +79,9 @@ def get_shoulder_y(landmarks):
 
 def get_shoulder_width(landmarks):
     """
-    Tính khoảng cách ngang giữa 2 vai (landmark 11 và 12).
-    Khi người dùng ngả ra sau, chiều rộng vai trên khung hình giảm
-    → shoulder_width_ratio < 1.
+    Returns the horizontal distance between the two shoulders (landmarks 11 and 12).
+    When the user leans backward (moves away from the camera) this value shrinks,
+    so shoulder_width_ratio < 1.
     """
     left_shoulder = landmarks[11]
     right_shoulder = landmarks[12]
@@ -90,11 +90,11 @@ def get_shoulder_width(landmarks):
 
 def get_face_width(landmarks):
     """
-    Tính khoảng cách ngang giữa 2 tai:
+    Returns the horizontal distance between the two ears:
       landmark 7 = right ear
       landmark 8 = left ear
-    Khi người dùng ngả ra sau, chiều rộng khuôn mặt trên khung hình giảm
-    → face_width_ratio < 1.
+    When the user leans backward (moves away from the camera) this value shrinks,
+    so face_width_ratio < 1.
     """
     right_ear = landmarks[7]
     left_ear = landmarks[8]
@@ -109,7 +109,8 @@ def get_nose_to_shoulder_distance(landmarks):
 
 def get_shoulder_points(frame, landmarks):
     """
-    Trả về tọa độ pixel của 2 vai để vẽ đường baseline và current shoulder line.
+    Returns the pixel coordinates of both shoulders,
+    used to draw the current shoulder line and the baseline.
     """
     height, width = frame.shape[:2]
 
@@ -152,7 +153,7 @@ def classify_posture(
       - shoulder_width_ratio = current_shoulder_width / baseline_shoulder_width
       - face_width_ratio      = current_face_width      / baseline_face_width
       When the user leans backward they move away from the camera, so both
-      projected widths shrink → ratios drop below 1.
+      projected widths shrink -> ratios drop below 1.
 
     Forward-hunch detection:
       - shoulder_drop  : how much the shoulders have fallen (normalised y)
@@ -190,7 +191,7 @@ def classify_posture(
     shoulder_dropped_strong = shoulder_drop > 0.06
     shoulder_dropped_mild = shoulder_drop > 0.035
     nose_close_strong = nose_ratio < 0.75
-    nose_close_mild = nose_ratio < 0.85
+    nose_close_mild = nose_ratio < 0.866
 
     if lean_backward_strong:
         status = "Leaning backward"
@@ -219,7 +220,7 @@ def classify_posture(
 
 def draw_baseline(frame, baseline_shoulder_y):
     """
-    Vẽ đường baseline ngang qua vị trí vai chuẩn.
+    Draws a horizontal baseline at the calibrated shoulder position.
     """
     height, width = frame.shape[:2]
     baseline_y_pixel = int(baseline_shoulder_y * height)
@@ -292,7 +293,7 @@ def main() -> None:
                 left_shoulder_point, right_shoulder_point = get_shoulder_points(frame, landmarks)
                 nose_point = get_nose_point(frame, landmarks)
 
-                # Vẽ đường nối 2 vai hiện tại
+                # Draw current shoulder line
                 cv2.line(
                     frame,
                     left_shoulder_point,
@@ -302,7 +303,7 @@ def main() -> None:
                 )
                 cv2.circle(frame, nose_point, 7, (255, 0, 255), -1)
 
-                # Giai đoạn calibration
+                # Calibration phase
                 if baseline_shoulder_y is None or baseline_nose_to_shoulder is None:
                     elapsed_time = time.time() - calibration_start_time
 
@@ -348,7 +349,7 @@ def main() -> None:
                         print("Baseline shoulder width:", baseline_shoulder_width)
                         print("Baseline face width:", baseline_face_width)
 
-                # Sau khi đã calibration xong
+                # Post-calibration: classify posture
                 else:
                     draw_baseline(frame, baseline_shoulder_y)
 
@@ -399,11 +400,11 @@ def main() -> None:
 
             key = cv2.waitKey(5) & 0xFF
 
-            # ESC để thoát
+            # ESC to quit
             if key == 27:
                 break
 
-            # Nhấn R để calibration lại
+            # Press R to recalibrate
             if key == ord("r"):
                 baseline_shoulder_y = None
                 baseline_nose_to_shoulder = None

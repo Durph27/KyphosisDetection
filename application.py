@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QStyle,
     QSystemTrayIcon,
@@ -194,6 +195,7 @@ def classify_posture(
     baseline_shoulder_width=None,
     current_face_width=None,
     baseline_face_width=None,
+    sensitivity=50,
 ):
     shoulder_drop = current_shoulder_y - baseline_shoulder_y
 
@@ -216,15 +218,29 @@ def classify_posture(
     else:
         face_width_ratio = 1.0
 
-    # Lean-backward thresholds
-    lean_backward_strong = shoulder_width_ratio < 0.82 and face_width_ratio < 0.82
-    lean_backward_mild   = shoulder_width_ratio < 0.90 or  face_width_ratio < 0.90
+    sensitivity_offset = (max(0, min(100, sensitivity)) - 50) / 50
+    drop_scale = 1 - (sensitivity_offset * 0.4)
+    ratio_shift = sensitivity_offset * 0.08
 
-    # Forward-hunch thresholds
-    shoulder_dropped_strong = shoulder_drop > 0.06
-    shoulder_dropped_mild   = shoulder_drop > 0.035
-    nose_close_strong = nose_ratio < 0.75
-    nose_close_mild   = nose_ratio < 0.85
+    # Lean-backward thresholds. Higher sensitivity moves ratio thresholds closer
+    # to 1.0, so smaller distance changes are reported earlier.
+    lean_backward_strong_threshold = 0.82 + ratio_shift
+    lean_backward_mild_threshold = 0.90 + ratio_shift
+    lean_backward_strong = (
+        shoulder_width_ratio < lean_backward_strong_threshold
+        and face_width_ratio < lean_backward_strong_threshold
+    )
+    lean_backward_mild = (
+        shoulder_width_ratio < lean_backward_mild_threshold
+        or face_width_ratio < lean_backward_mild_threshold
+    )
+
+    # Forward-hunch thresholds. Higher sensitivity lowers shoulder-drop
+    # thresholds and raises nose-ratio thresholds.
+    shoulder_dropped_strong = shoulder_drop > (0.06 * drop_scale)
+    shoulder_dropped_mild = shoulder_drop > (0.035 * drop_scale)
+    nose_close_strong = nose_ratio < (0.75 + ratio_shift)
+    nose_close_mild = nose_ratio < (0.85 + ratio_shift)
 
     if lean_backward_strong:
         status = "Leaning backward"
@@ -288,14 +304,24 @@ class PostureWorker(QThread):
     camera_stopped = Signal()
     camera_error = Signal(str)
 
-    def __init__(self, camera_index=0, calibration_seconds=3, parent=None):
+    def __init__(
+        self,
+        camera_index=0,
+        calibration_seconds=3,
+        threshold_sensitivity=50,
+        parent=None,
+    ):
         super().__init__(parent)
         self.camera_index = camera_index
         self.calibration_seconds = calibration_seconds
+        self.threshold_sensitivity = threshold_sensitivity
         self._recalibration_requested = threading.Event()
 
     def request_recalibration(self) -> None:
         self._recalibration_requested.set()
+
+    def set_threshold_sensitivity(self, sensitivity: int) -> None:
+        self.threshold_sensitivity = max(0, min(100, sensitivity))
 
     def run(self) -> None:
         capture = None
@@ -455,6 +481,7 @@ class PostureWorker(QThread):
                             baseline_shoulder_width,
                             current_face_width,
                             baseline_face_width,
+                            self.threshold_sensitivity,
                         )
                         status_kind = self._status_kind(status)
 
@@ -780,6 +807,54 @@ class PostureDashboard(QMainWindow):
         panel_layout.addWidget(self.settings_summary_label)
         panel_layout.addStretch()
 
+        sensitivity_frame = QFrame()
+        sensitivity_frame.setStyleSheet(
+            "QFrame { background-color: #111c2f; border-radius: 8px; }"
+            "QLabel { color: #cbd5e1; }"
+        )
+        sensitivity_layout = QVBoxLayout(sensitivity_frame)
+        sensitivity_layout.setContentsMargins(12, 12, 12, 12)
+        sensitivity_layout.setSpacing(8)
+
+        sensitivity_header = QHBoxLayout()
+        sensitivity_title = QLabel("Threshold sensitivity")
+        sensitivity_title.setStyleSheet("font-size: 14px; font-weight: 700;")
+        self.sensitivity_value_label = QLabel()
+        self.sensitivity_value_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.sensitivity_value_label.setStyleSheet(
+            "color: #38bdf8; font-size: 13px; font-weight: 700;"
+        )
+        sensitivity_header.addWidget(sensitivity_title)
+        sensitivity_header.addWidget(self.sensitivity_value_label)
+        sensitivity_layout.addLayout(sensitivity_header)
+
+        self.sensitivity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.sensitivity_slider.setRange(0, 100)
+        self.sensitivity_slider.setSingleStep(5)
+        self.sensitivity_slider.setPageStep(10)
+        self.sensitivity_slider.setValue(
+            self.settings.value("threshold_sensitivity", 50, type=int)
+        )
+        self.sensitivity_slider.setStyleSheet(
+            "QSlider::groove:horizontal { height: 6px; background: #334155; "
+            "border-radius: 3px; }"
+            "QSlider::handle:horizontal { background: #38bdf8; width: 16px; "
+            "height: 16px; margin: -5px 0; border-radius: 8px; }"
+            "QSlider::sub-page:horizontal { background: #22c55e; "
+            "border-radius: 3px; }"
+        )
+        self.sensitivity_slider.valueChanged.connect(
+            self.update_threshold_sensitivity
+        )
+        sensitivity_layout.addWidget(self.sensitivity_slider)
+
+        sensitivity_hint = QLabel("Lower tolerates more movement; higher alerts sooner.")
+        sensitivity_hint.setWordWrap(True)
+        sensitivity_hint.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        sensitivity_layout.addWidget(sensitivity_hint)
+        panel_layout.addWidget(sensitivity_frame)
+        self.update_threshold_sensitivity(self.sensitivity_slider.value())
+
         self.start_button = QPushButton("Start Monitoring")
         self.stop_button = QPushButton("Stop Monitoring")
         self.recalibrate_button = QPushButton("Recalibrate")
@@ -862,6 +937,24 @@ class PostureDashboard(QMainWindow):
             "QPushButton:disabled { background-color: #1e293b; color: #64748b; }"
         )
 
+    @Slot(int)
+    def update_threshold_sensitivity(self, value: int) -> None:
+        if value < 34:
+            label = "Low"
+        elif value > 66:
+            label = "High"
+        else:
+            label = "Normal"
+
+        self.sensitivity_value_label.setText(f"{label} ({value}%)")
+        self.settings.setValue("threshold_sensitivity", value)
+        self.settings.sync()
+
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.set_threshold_sensitivity(value)
+
+        self._refresh_settings_summary()
+
     @Slot()
     def start_camera(self) -> None:
         if self.worker is not None and self.worker.isRunning():
@@ -872,7 +965,12 @@ class PostureDashboard(QMainWindow):
         self._set_status("Starting camera...", "starting")
         self._set_controls(camera_running=True, camera_ready=False)
 
-        worker = PostureWorker(camera_index=0, calibration_seconds=3, parent=self)
+        worker = PostureWorker(
+            camera_index=0,
+            calibration_seconds=3,
+            threshold_sensitivity=self.sensitivity_slider.value(),
+            parent=self,
+        )
         worker.frame_ready.connect(self.update_frame)
         worker.metrics_ready.connect(self.update_metrics)
         worker.camera_started.connect(self.on_camera_started)
@@ -1084,8 +1182,10 @@ class PostureDashboard(QMainWindow):
             actions.append("screen blur")
 
         delay_seconds = self.settings.value("alert_delay_seconds", 5, type=int)
+        sensitivity = self.settings.value("threshold_sensitivity", 50, type=int)
         self.settings_summary_label.setText(
-            f"After {delay_seconds}s of continuous detection: {', '.join(actions)}"
+            f"After {delay_seconds}s of continuous detection: {', '.join(actions)}\n"
+            f"Detection sensitivity: {sensitivity}%"
         )
 
     def _set_status(self, text: str, status_kind: str) -> None:
