@@ -237,10 +237,10 @@ def classify_posture(
 
     # Forward-hunch thresholds. Higher sensitivity lowers shoulder-drop
     # thresholds and raises nose-ratio thresholds.
-    shoulder_dropped_strong = shoulder_drop > (0.06 * drop_scale)
-    shoulder_dropped_mild = shoulder_drop > (0.035 * drop_scale)
-    nose_close_strong = nose_ratio < (0.75 + ratio_shift)
-    nose_close_mild = nose_ratio < (0.85 + ratio_shift)
+    shoulder_dropped_strong = shoulder_drop > (0.067 * drop_scale)
+    shoulder_dropped_mild = shoulder_drop > (0.030 * drop_scale)
+    nose_close_strong = nose_ratio < (0.707 + ratio_shift)
+    nose_close_mild = nose_ratio < (0.866 + ratio_shift)
 
     if lean_backward_strong:
         status = "Leaning backward"
