@@ -781,11 +781,6 @@ class PostureDashboard(QMainWindow):
         title.setStyleSheet("font-size: 24px; font-weight: 700; color: #f8fafc;")
         panel_layout.addWidget(title)
 
-        subtitle = QLabel("Runs in the background and reminds you to sit upright.")
-        subtitle.setWordWrap(True)
-        subtitle.setStyleSheet("color: #94a3b8; font-size: 13px;")
-        panel_layout.addWidget(subtitle)
-
         self.status_label = QLabel()
         self.status_label.setWordWrap(True)
         self.status_label.setMinimumHeight(82)
@@ -850,8 +845,10 @@ class PostureDashboard(QMainWindow):
 
         sensitivity_hint = QLabel("Lower tolerates more movement; higher alerts sooner.")
         sensitivity_hint.setWordWrap(True)
+        sensitivity_hint.setMinimumHeight(32)
         sensitivity_hint.setStyleSheet("color: #94a3b8; font-size: 12px;")
         sensitivity_layout.addWidget(sensitivity_hint)
+        sensitivity_frame.setMinimumHeight(98)
         panel_layout.addWidget(sensitivity_frame)
         self.update_threshold_sensitivity(self.sensitivity_slider.value())
 
@@ -990,6 +987,7 @@ class PostureDashboard(QMainWindow):
         self._set_status("Stopping camera...", "idle")
         self._set_controls(camera_running=True, camera_ready=False)
         self.stop_button.setEnabled(False)
+        self._show_video_placeholder("Monitoring is stopped")
         self.worker.requestInterruption()
 
     @Slot()
@@ -1021,6 +1019,7 @@ class PostureDashboard(QMainWindow):
         self._reset_hunch_detection()
         self._set_status(f"Camera error: {message}", "error")
         self.alert_progress_label.setText("Monitoring is unavailable")
+        self._show_video_placeholder("Camera preview is unavailable")
 
     @Slot()
     def on_camera_stopped(self) -> None:
@@ -1028,6 +1027,7 @@ class PostureDashboard(QMainWindow):
         if not self.has_camera_error:
             self._set_status("Camera is idle", "idle")
             self.alert_progress_label.setText("Monitoring is stopped")
+            self._show_video_placeholder("Monitoring is stopped")
         self._set_controls(camera_running=False)
 
     def _clear_worker(self, worker) -> None:
@@ -1211,6 +1211,11 @@ class PostureDashboard(QMainWindow):
             Qt.TransformationMode.SmoothTransformation,
         )
         self.video_label.setPixmap(scaled_pixmap)
+
+    def _show_video_placeholder(self, text: str) -> None:
+        self.current_pixmap = None
+        self.video_label.clear()
+        self.video_label.setText(text)
 
     @Slot()
     def show_dashboard(self) -> None:
