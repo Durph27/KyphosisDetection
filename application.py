@@ -197,7 +197,8 @@ def classify_posture(
     baseline_face_width=None,
     sensitivity=50,
 ):
-    shoulder_drop = current_shoulder_y - baseline_shoulder_y
+    shoulder_drop = current_shoulder_y - baseline_shoulder_y 
+    #In Media Pipe the coordinates are standardized 0->1 so shoulder_drop can understand as ratio
 
     if baseline_nose_to_shoulder == 0:
         nose_ratio = 1.0
